@@ -5,9 +5,10 @@
 
   "incrementalUrl": "20251021.144400",
   "fingerPrintUrl": "Iyo/one_go_aon/one_go_aon:14/UKQ1.240826.001/v0.1.0/20251021.144400:user/test-keys",
-  "payloadUrl": "https://github.com/qaz101234560-hub/app-update/releases/download/ota/payload.bin",
-  "propertiesUrl": "https://github.com/qaz101234560-hub/app-update/releases/download/ota/payload_properties.txt"
+  "payloadUrl": "https://github.com/qaz101234560-hub/app-update/releases/download/v1.0/payload.bin",
+  "propertiesUrl": "https://github.com/qaz101234560-hub/app-update/releases/download/v1.0/payload_properties.txt"
 }
+
 
 
 
