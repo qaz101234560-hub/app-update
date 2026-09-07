@@ -9,184 +9,466 @@ const wss = new WebSocket.Server({
   noServer: true
 });
 
+// ==============================
+// 基本統計
+// ==============================
+
 let totalConnections = 0;
 let totalMessages = 0;
 let totalClosed = 0;
 
+// ==============================
+// Outbound 統計
+// ==============================
+
+let totalOutboundBytes = 0;
+let totalOutboundMessages = 0;
+
+// Render 每月 5 GB
+const MONTHLY_OUTBOUND_LIMIT_BYTES =
+  5 * 1024 * 1024 * 1024;
+
+// ==============================
+// Messages/sec
+// ==============================
+
 let lastTotalMessages = 0;
 let messagesPerSecond = 0;
 
+// ==============================
+// CPU
+// ==============================
+
 let lastCpuUsage = process.cpuUsage();
 let lastCpuCheckNs = process.hrtime.bigint();
+
 let cpuPercent = 0;
 
-// 每秒更新 message rate 與 CPU 使用率
-setInterval(() => {
-  // Messages/sec
-  const currentMessages = totalMessages;
-  messagesPerSecond = currentMessages - lastTotalMessages;
-  lastTotalMessages = currentMessages;
+// ==============================
+// 每秒更新 CPU / message rate
+// ==============================
 
-  // CPU %
-  const nowCpuUsage = process.cpuUsage();
-  const nowNs = process.hrtime.bigint();
+setInterval(() => {
+  // ------------------------------
+  // Messages/sec
+  // ------------------------------
+
+  const currentMessages = totalMessages;
+
+  messagesPerSecond =
+    currentMessages - lastTotalMessages;
+
+  lastTotalMessages =
+    currentMessages;
+
+  // ------------------------------
+  // CPU
+  // ------------------------------
+
+  const nowCpuUsage =
+    process.cpuUsage();
+
+  const nowNs =
+    process.hrtime.bigint();
 
   const userDiffUs =
-    nowCpuUsage.user - lastCpuUsage.user;
+    nowCpuUsage.user -
+    lastCpuUsage.user;
 
   const systemDiffUs =
-    nowCpuUsage.system - lastCpuUsage.system;
+    nowCpuUsage.system -
+    lastCpuUsage.system;
 
   const cpuUsedUs =
-    userDiffUs + systemDiffUs;
+    userDiffUs +
+    systemDiffUs;
 
   const elapsedUs =
-    Number(nowNs - lastCpuCheckNs) / 1000;
+    Number(
+      nowNs - lastCpuCheckNs
+    ) / 1000;
 
   cpuPercent =
     elapsedUs > 0
       ? (cpuUsedUs / elapsedUs) * 100
       : 0;
 
-  lastCpuUsage = nowCpuUsage;
-  lastCpuCheckNs = nowNs;
+  lastCpuUsage =
+    nowCpuUsage;
+
+  lastCpuCheckNs =
+    nowNs;
+
 }, 1000);
 
-server.on("upgrade", (request, socket, head) => {
-  try {
-    const url = new URL(
-      request.url,
-      "http://localhost"
-    );
+// ==============================
+// 統一 Server -> Client 發送函式
+// ==============================
 
-    if (url.pathname !== "/ws") {
-      socket.write(
-        "HTTP/1.1 404 Not Found\r\n\r\n"
-      );
-      socket.destroy();
-      return;
-    }
+function sendToClient(ws, data) {
 
-    wss.handleUpgrade(
-      request,
-      socket,
-      head,
-      (ws) => {
-        wss.emit(
-          "connection",
-          ws,
-          request
-        );
-      }
-    );
-  } catch (err) {
-    socket.write(
-      "HTTP/1.1 400 Bad Request\r\n\r\n"
-    );
-    socket.destroy();
+  if (
+    ws.readyState !==
+    WebSocket.OPEN
+  ) {
+    return false;
   }
-});
 
-wss.on("connection", (ws, req) => {
-  totalConnections++;
+  const payload =
+    typeof data === "string"
+      ? data
+      : JSON.stringify(data);
 
-  const url = new URL(
-    req.url,
-    "http://localhost"
-  );
+  const bytes =
+    Buffer.byteLength(
+      payload,
+      "utf8"
+    );
 
-  const deviceId =
-    url.searchParams.get("deviceId") ||
-    "unknown";
+  totalOutboundBytes += bytes;
+  totalOutboundMessages++;
 
-  ws.deviceId = deviceId;
-  ws.connectedAt = Date.now();
-  ws.lastSeen = Date.now();
+  ws.send(payload);
 
-  ws.on("message", (data) => {
-    totalMessages++;
-    ws.lastSeen = Date.now();
+  return true;
+}
+
+// ==============================
+// WebSocket Upgrade
+// ==============================
+
+server.on(
+  "upgrade",
+  (request, socket, head) => {
 
     try {
-      const message =
-        JSON.parse(data.toString());
+
+      const url =
+        new URL(
+          request.url,
+          "http://localhost"
+        );
 
       if (
-        message.type === "heartbeat"
+        url.pathname !== "/ws"
       ) {
+
+        socket.write(
+          "HTTP/1.1 404 Not Found\r\n\r\n"
+        );
+
+        socket.destroy();
+
         return;
       }
 
-      if (
-        message.type === "status"
-      ) {
-        return;
-      }
+      wss.handleUpgrade(
+        request,
+        socket,
+        head,
+        (ws) => {
+
+          wss.emit(
+            "connection",
+            ws,
+            request
+          );
+
+        }
+      );
+
     } catch (err) {
-      // 壓測階段忽略格式錯誤
+
+      socket.write(
+        "HTTP/1.1 400 Bad Request\r\n\r\n"
+      );
+
+      socket.destroy();
+
     }
-  });
 
-  ws.on("close", () => {
-    totalClosed++;
-  });
+  }
+);
 
-  ws.on("error", (err) => {
-    console.error(
-      `WebSocket error [${deviceId}]: ${err.message}`
+// ==============================
+// WebSocket Connection
+// ==============================
+
+wss.on(
+  "connection",
+  (ws, req) => {
+
+    totalConnections++;
+
+    const url =
+      new URL(
+        req.url,
+        "http://localhost"
+      );
+
+    const deviceId =
+      url.searchParams.get(
+        "deviceId"
+      ) || "unknown";
+
+    ws.deviceId =
+      deviceId;
+
+    ws.connectedAt =
+      Date.now();
+
+    ws.lastSeen =
+      Date.now();
+
+    // ------------------------------
+    // Client -> Server message
+    // ------------------------------
+
+    ws.on(
+      "message",
+      (data) => {
+
+        totalMessages++;
+
+        ws.lastSeen =
+          Date.now();
+
+        try {
+
+          const message =
+            JSON.parse(
+              data.toString()
+            );
+
+          if (
+            message.type ===
+            "heartbeat"
+          ) {
+
+            return;
+          }
+
+          if (
+            message.type ===
+            "status"
+          ) {
+
+            return;
+          }
+
+        } catch (err) {
+
+          // 壓測期間忽略格式錯誤
+
+        }
+
+      }
     );
-  });
-});
 
-app.get("/", (req, res) => {
-  res.send(
-    "WebSocket test server is running"
+    // ------------------------------
+    // Close
+    // ------------------------------
+
+    ws.on(
+      "close",
+      () => {
+
+        totalClosed++;
+
+      }
+    );
+
+    // ------------------------------
+    // Error
+    // ------------------------------
+
+    ws.on(
+      "error",
+      (err) => {
+
+        console.error(
+          `WebSocket error [${deviceId}]: ${err.message}`
+        );
+
+      }
+    );
+
+  }
+);
+
+// ==============================
+// Server -> Client 測試
+//
+// 每 30 秒向所有在線裝置
+// 發送 heartbeat_ack
+// ==============================
+
+setInterval(() => {
+
+  const message = {
+    type: "heartbeat_ack",
+    timestamp: Date.now()
+  };
+
+  let sentCount = 0;
+
+  wss.clients.forEach(
+    (ws) => {
+
+      if (
+        sendToClient(
+          ws,
+          message
+        )
+      ) {
+
+        sentCount++;
+
+      }
+
+    }
   );
-});
 
-app.get("/stats", (req, res) => {
-  const mem =
-    process.memoryUsage();
+  console.log(
+    `Heartbeat ACK sent to ${sentCount} clients`
+  );
 
-  res.json({
-    connected:
-      wss.clients.size,
+}, 30000);
 
-    totalConnections,
-    totalClosed,
-    totalMessages,
+// ==============================
+// HTTP Root
+// ==============================
 
-    messagesPerSecond,
+app.get(
+  "/",
+  (req, res) => {
 
-    memory: {
-      rssMB:
-        +(mem.rss / 1024 / 1024)
-          .toFixed(2),
+    res.send(
+      "WebSocket test server is running"
+    );
 
-      heapUsedMB:
-        +(mem.heapUsed / 1024 / 1024)
-          .toFixed(2),
+  }
+);
 
-      heapTotalMB:
-        +(mem.heapTotal / 1024 / 1024)
-          .toFixed(2),
+// ==============================
+// Stats
+// ==============================
 
-      externalMB:
-        +(mem.external / 1024 / 1024)
-          .toFixed(2)
-    },
+app.get(
+  "/stats",
+  (req, res) => {
 
-    cpu: {
-      processPercent:
-        +cpuPercent.toFixed(2)
-    },
+    const mem =
+      process.memoryUsage();
 
-    uptimeSeconds:
-      Math.floor(
-        process.uptime()
-      )
-  });
-});
+    const outboundKB =
+      totalOutboundBytes /
+      1024;
+
+    const outboundMB =
+      totalOutboundBytes /
+      1024 /
+      1024;
+
+    const outboundGB =
+      totalOutboundBytes /
+      1024 /
+      1024 /
+      1024;
+
+    const percentOf5GB =
+      (
+        totalOutboundBytes /
+        MONTHLY_OUTBOUND_LIMIT_BYTES
+      ) * 100;
+
+    res.json({
+
+      connected:
+        wss.clients.size,
+
+      totalConnections,
+
+      totalClosed,
+
+      totalMessages,
+
+      messagesPerSecond,
+
+      memory: {
+
+        rssMB:
+          +(
+            mem.rss /
+            1024 /
+            1024
+          ).toFixed(2),
+
+        heapUsedMB:
+          +(
+            mem.heapUsed /
+            1024 /
+            1024
+          ).toFixed(2),
+
+        heapTotalMB:
+          +(
+            mem.heapTotal /
+            1024 /
+            1024
+          ).toFixed(2),
+
+        externalMB:
+          +(
+            mem.external /
+            1024 /
+            1024
+          ).toFixed(2)
+
+      },
+
+      cpu: {
+
+        processPercent:
+          +cpuPercent.toFixed(2)
+
+      },
+
+      outbound: {
+
+        messages:
+          totalOutboundMessages,
+
+        bytes:
+          totalOutboundBytes,
+
+        kb:
+          +outboundKB.toFixed(2),
+
+        mb:
+          +outboundMB.toFixed(4),
+
+        gb:
+          +outboundGB.toFixed(6),
+
+        percentOf5GB:
+          +percentOf5GB.toFixed(6)
+
+      },
+
+      uptimeSeconds:
+        Math.floor(
+          process.uptime()
+        )
+
+    });
+
+  }
+);
+
+// ==============================
+// Start Server
+// ==============================
 
 const PORT =
   process.env.PORT || 3000;
@@ -195,6 +477,7 @@ server.listen(
   PORT,
   "0.0.0.0",
   () => {
+
     console.log(
       `Server listening on port ${PORT}`
     );
@@ -206,5 +489,10 @@ server.listen(
     console.log(
       "Stats endpoint: /stats"
     );
+
+    console.log(
+      "Heartbeat ACK interval: 30 seconds"
+    );
+
   }
 );
