@@ -5,14 +5,34 @@ const WebSocket = require("ws");
 const app = express();
 const server = http.createServer(app);
 
+// WebSocket server 改成 noServer 模式
 const wss = new WebSocket.Server({
-  server,
-  path: "/ws"
+  noServer: true
 });
 
 let totalConnections = 0;
 let totalMessages = 0;
 let totalClosed = 0;
+
+// 明確處理 HTTP Upgrade
+server.on("upgrade", (request, socket, head) => {
+  try {
+    const url = new URL(request.url, "http://localhost");
+
+    if (url.pathname !== "/ws") {
+      socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit("connection", ws, request);
+    });
+  } catch (err) {
+    socket.write("HTTP/1.1 400 Bad Request\r\n\r\n");
+    socket.destroy();
+  }
+});
 
 wss.on("connection", (ws, req) => {
   totalConnections++;
@@ -21,11 +41,28 @@ wss.on("connection", (ws, req) => {
   const deviceId = url.searchParams.get("deviceId") || "unknown";
 
   ws.deviceId = deviceId;
+  ws.connectedAt = Date.now();
+  ws.lastSeen = Date.now();
 
   ws.on("message", (data) => {
     totalMessages++;
+    ws.lastSeen = Date.now();
 
-    // 壓測時不回 ACK，避免製造不必要 outbound traffic
+    try {
+      const message = JSON.parse(data.toString());
+
+      // 目前壓測階段只接收，不回 ACK
+      // 避免額外 outbound traffic
+      if (message.type === "heartbeat") {
+        return;
+      }
+
+      if (message.type === "status") {
+        return;
+      }
+    } catch (err) {
+      // 壓測時忽略非 JSON 或格式錯誤
+    }
   });
 
   ws.on("close", () => {
@@ -33,14 +70,18 @@ wss.on("connection", (ws, req) => {
   });
 
   ws.on("error", (err) => {
-    console.error(`WebSocket error [${deviceId}]:`, err.message);
+    console.error(
+      `WebSocket error [${deviceId}]: ${err.message}`
+    );
   });
 });
 
+// 根目錄
 app.get("/", (req, res) => {
   res.send("WebSocket test server is running");
 });
 
+// 統計資訊
 app.get("/stats", (req, res) => {
   const mem = process.memoryUsage();
 
@@ -65,6 +106,6 @@ const PORT = process.env.PORT || 3000;
 
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`Server listening on port ${PORT}`);
-  console.log(`WebSocket endpoint: /ws`);
-  console.log(`Stats endpoint: /stats`);
+  console.log("WebSocket endpoint: /ws");
+  console.log("Stats endpoint: /stats");
 });

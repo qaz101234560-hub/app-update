@@ -1,7 +1,7 @@
 const WebSocket = require("ws");
 
 const COUNT = Number(process.argv[2]) || 100;
-const URL = "ws://localhost:3000/ws";
+const URL = "wss://app-update-rjhf.onrender.com/ws";
 
 let connected = 0;
 let closed = 0;
@@ -19,14 +19,28 @@ function createClient(i) {
     connected++;
   });
 
-  ws.on("close", () => {
-    connected--;
-    closed++;
-  });
+  ws.on("close", (code, reason) => {
+  connected--;
+  closed++;
 
-  ws.on("error", () => {
-    errors++;
-  });
+  console.log(
+    `[CLOSE] ${deviceId} code=${code} reason=${reason.toString()}`
+  );
+});
+
+ws.on("error", (err) => {
+  errors++;
+
+  console.log(
+    `[ERROR] ${deviceId}: ${err.message}`
+  );
+});
+
+ws.on("unexpected-response", (req, res) => {
+  console.log(
+    `[HTTP ERROR] ${deviceId}: HTTP ${res.statusCode}`
+  );
+});
 
   // 每 5 分鐘模擬 Android heartbeat
   const timer = setInterval(() => {
